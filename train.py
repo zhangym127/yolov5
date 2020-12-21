@@ -41,13 +41,13 @@ logger = logging.getLogger(__name__)
 def train(hyp, opt, device, tb_writer=None):
     
     #确定训练结果的输出位置和文件
-	logger.info(f'Hyperparameters {hyp}')
+    logger.info(f'Hyperparameters {hyp}')
     log_dir = Path(tb_writer.log_dir) if tb_writer else Path(opt.logdir) / 'evolve'  # logging directory 默认是runs/exp0
     #权重的输出位置
-	wdir = log_dir / 'weights'  # weights directory
+    wdir = log_dir / 'weights'  # weights directory
     os.makedirs(wdir, exist_ok=True)
     #权重文件
-	last = wdir / 'last.pt'
+    last = wdir / 'last.pt'
     best = wdir / 'best.pt'
     results_file = str(log_dir / 'results.txt')
 	
@@ -69,7 +69,7 @@ def train(hyp, opt, device, tb_writer=None):
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.FullLoader)  # data dict
     # 检查训练数据是否存在，不存在则下载
-	with torch_distributed_zero_first(rank):
+    with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     # 获取训练和测试数据的文件清单
     train_path = data_dict['train']
@@ -85,20 +85,20 @@ def train(hyp, opt, device, tb_writer=None):
         # 如果权重文件不存在则下载
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
-		# 加载权重文件
+        # 加载权重文件
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
         if hyp.get('anchors'):
             ckpt['model'].yaml['anchors'] = round(hyp['anchors'])  # force autoanchor
-		# 加载模型文件，例如yolov5s.yaml，如果没有指定模型文件则根据权重文件确定模型
+        # 加载模型文件，例如yolov5s.yaml，如果没有指定模型文件则根据权重文件确定模型
         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc).to(device)  # create
-		# 预训练权重里面保存了默认coco数据集对应的anchor，加载预训练权重就会覆盖掉用户自定义了anchor
+        # 预训练权重里面保存了默认coco数据集对应的anchor，加载预训练权重就会覆盖掉用户自定义了anchor
 		# 如果opt.cfg存在(表示采用预训练权重进行训练)就设置去除anchor，使用用户自定义的anchor
 		# 如果是resume，就不去除权重中的anchor，接着训练
         exclude = ['anchor'] if opt.cfg or hyp.get('anchors') else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
-		# 显示加载预训练权重的键值对和创建模型的键值对
+        # 显示加载预训练权重的键值对和创建模型的键值对
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
         # 没有权重文件，直接根据模型文件创建
@@ -138,13 +138,13 @@ def train(hyp, opt, device, tb_writer=None):
         optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
     # 设置pg1组的优化方式
     optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
-	# 设置pg2组的优化方式
+    # 设置pg2组的优化方式
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
-	# 打印优化信息
+    # 打印优化信息
     logger.info('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
     del pg0, pg1, pg2
 
-	# 设置学习率衰减，这里使用余弦退火方式
+    # 设置学习率衰减，这里使用余弦退火方式
     # 就是根据以下公式lf,epoch和超参数hyp['lrf']进行衰减	
     # Scheduler https://arxiv.org/pdf/1812.01187.pdf
     # https://pytorch.org/docs/stable/_modules/torch/optim/lr_scheduler.html#OneCycleLR
@@ -179,8 +179,8 @@ def train(hyp, opt, device, tb_writer=None):
             assert start_epoch > 0, '%s training to %g epochs is finished, nothing to resume.' % (weights, epochs)
             shutil.copytree(wdir, wdir.parent / f'weights_backup_epoch{start_epoch - 1}')  # save previous weights
         
-		#如果新设置的epochs小于已训练的，则视新设置的epochs为需要再训练的迭代次数，而不是总的训练次数
-		if epochs < start_epoch:
+        #如果新设置的epochs小于已训练的，则视新设置的epochs为需要再训练的迭代次数，而不是总的训练次数
+        if epochs < start_epoch:
             logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
                         (weights, ckpt['epoch'], epochs))
             epochs += ckpt['epoch']  # finetune additional epochs
@@ -251,7 +251,7 @@ def train(hyp, opt, device, tb_writer=None):
     # Model parameters
     # 根据自己数据集的类别数设置分类损失的系数
     hyp['cls'] *= nc / 80.  # scale coco-tuned hyp['cls'] to current dataset
-	# 设置类别数，超参数
+    # 设置类别数，超参数
     model.nc = nc  # attach number of classes to model
     model.hyp = hyp  # attach hyperparameters to model
     """
@@ -261,14 +261,14 @@ def train(hyp, opt, device, tb_writer=None):
     """
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
     # 根据各类别的数量初始化类别权重，数量越多，权重越低
-	model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
+    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
     # 获得类别名称
-	model.names = names
+    model.names = names
 
     # Start training
     # 开始训练
     t0 = time.time()
-	# 获取热身训练的迭代次数
+    # 获取热身训练的迭代次数
     nw = max(round(hyp['warmup_epochs'] * nb), 1e3)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
 	# 初始化mAP和results
@@ -303,10 +303,14 @@ def train(hyp, opt, device, tb_writer=None):
            通过random.choices生成图片索引indices从而进行采样
            """
             if rank in [-1, 0]:
+                # 获得类别权重
                 cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2  # class weights
+                # 获得图像权重
                 iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
+                # 生成随机的权重索引
                 dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
             # Broadcast if DDP
+            # 如果是DDP模式则广播采样策略到其他的节点
             if rank != -1:
                 indices = (torch.tensor(dataset.indices) if rank == 0 else torch.zeros(dataset.n)).int()
                 dist.broadcast(indices, 0)
@@ -317,30 +321,47 @@ def train(hyp, opt, device, tb_writer=None):
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
+        # 初始化训练时打印的平均损失信息
         mloss = torch.zeros(4, device=device)  # mean losses
         if rank != -1:
+            # DDP模式下打乱数据, ddp.sampler的随机采样数据是基于epoch+seed作为随机种子，
+            # 每次epoch不同，随机种子就不同
             dataloader.sampler.set_epoch(epoch)
         pbar = enumerate(dataloader)
         logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'targets', 'img_size'))
         if rank in [-1, 0]:
+            # 创建进度条，方便训练时信息的展示
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+            # 计算迭代的次数
             ni = i + nb * epoch  # number integrated batches (since train start)
+            # 将图像的8位映射为float32
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
             # Warmup
+            """
+            热身训练(前nw次迭代)
+            在前nw次迭代中，根据以下方式选取accumulate和学习率
+            """
             if ni <= nw:
                 xi = [0, nw]  # x interp
                 # model.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
                 accumulate = max(1, np.interp(ni, xi, [1, nbs / total_batch_size]).round())
                 for j, x in enumerate(optimizer.param_groups):
                     # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+                    """
+                    bias的学习率从0.1下降到基准学习率lr*lf(epoch)，
+                    其他的参数学习率从0增加到lr*lf(epoch).
+                    lf为上面设置的余弦退火的衰减函数
+                    """
                     x['lr'] = np.interp(ni, xi, [hyp['warmup_bias_lr'] if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
+                    # 动量momentum也从0.9慢慢变到hyp['momentum'](default=0.937)
                     if 'momentum' in x:
                         x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
 
             # Multi-scale
+            # 设置多尺度训练，从imgsz * 0.5, imgsz * 1.5 + gs随机选取尺寸
             if opt.multi_scale:
                 sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
                 sf = sz / max(imgs.shape[2:])  # scale factor
@@ -349,16 +370,23 @@ def train(hyp, opt, device, tb_writer=None):
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
+            # 前向传播，混合精度
             with amp.autocast(enabled=cuda):
+                # 前向传播
                 pred = model(imgs)  # forward
+                # 计算损失，包括分类损失，objectness损失，框的回归损失
+                # loss为总损失值，loss_items为一个元组，包含分类损失，objectness损失，框的回归损失和总损失
                 loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size
                 if rank != -1:
+                    # 平均不同gpu之间的梯度
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
 
             # Backward
+            # 反向传播
             scaler.scale(loss).backward()
 
             # Optimize
+            # 模型反向传播accumulate次之后再根据累积的梯度更新一次参数
             if ni % accumulate == 0:
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
@@ -368,13 +396,16 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Print
             if rank in [-1, 0]:
+                # 打印显存，进行的轮次，损失，target的数量和图片的size等信息
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
+                # 进度条显示以上信息
                 pbar.set_description(s)
 
                 # Plot
+                # 将前三次迭代batch的标签框在图片上画出来并保存
                 if ni < 3:
                     f = str(log_dir / f'train_batch{ni}.jpg')  # filename
                     result = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
@@ -385,6 +416,7 @@ def train(hyp, opt, device, tb_writer=None):
             # end batch ------------------------------------------------------------------------------------------------
 
         # Scheduler
+        # 进行学习率衰减
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
         scheduler.step()
 
@@ -392,8 +424,13 @@ def train(hyp, opt, device, tb_writer=None):
         if rank in [-1, 0]:
             # mAP
             if ema:
+                # 更新EMA的属性
+                # 添加include的属性
                 ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride'])
+            # 判断该epoch是否为最后一轮
             final_epoch = epoch + 1 == epochs
+            # 对测试集进行测试，计算mAP等指标
+            # 测试时使用的是EMA模型
             if not opt.notest or final_epoch:  # Calculate mAP
                 results, maps, times = test.test(opt.data,
                                                  batch_size=total_batch_size,
@@ -405,12 +442,15 @@ def train(hyp, opt, device, tb_writer=None):
                                                  plots=epoch == 0 or final_epoch)  # plot first and last
 
             # Write
+            # 将指标写入result.txt
             with open(results_file, 'a') as f:
                 f.write(s + '%10.4g' * 7 % results + '\n')  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+            # 如果设置opt.bucket, 上传results.txt到谷歌云盘
             if len(opt.name) and opt.bucket:
                 os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 
             # Tensorboard
+            # 添加指标，损失等信息到tensorboard显示
             if tb_writer:
                 tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
                         'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
@@ -420,11 +460,17 @@ def train(hyp, opt, device, tb_writer=None):
                     tb_writer.add_scalar(tag, x, epoch)
 
             # Update best mAP
+            # 更新best_fitness
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
                 best_fitness = fi
 
             # Save model
+            """
+            保存模型，还保存了epoch，results，optimizer等信息，
+            optimizer将不会在最后一轮完成后保存
+            model保存的是EMA的模型
+            """
             save = (not opt.nosave) or (final_epoch and not opt.evolve)
             if save:
                 with open(results_file, 'r') as f:  # create checkpoint
@@ -444,6 +490,11 @@ def train(hyp, opt, device, tb_writer=None):
 
     if rank in [-1, 0]:
         # Strip optimizers
+        """
+        模型训练完后，strip_optimizer函数将optimizer从ckpt中去除；
+        并且对模型进行model.half(), 将Float32的模型->Float16，
+        可以减少模型大小，提高inference速度
+        """
         n = opt.name if opt.name.isnumeric() else ''
         fresults, flast, fbest = log_dir / f'results{n}.txt', wdir / f'last{n}.pt', wdir / f'best{n}.pt'
         for f1, f2 in zip([wdir / 'last.pt', wdir / 'best.pt', results_file], [flast, fbest, fresults]):
@@ -451,12 +502,15 @@ def train(hyp, opt, device, tb_writer=None):
                 os.rename(f1, f2)  # rename
                 if str(f2).endswith('.pt'):  # is *.pt
                     strip_optimizer(f2)  # strip optimizer
+                    # 上传结果到谷歌云盘
                     os.system('gsutil cp %s gs://%s/weights' % (f2, opt.bucket)) if opt.bucket else None  # upload
         # Finish
+        # 可视化results.txt文件
         if not opt.evolve:
             plot_results(save_dir=log_dir)  # save as results.png
         logger.info('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
 
+    # 释放显存
     dist.destroy_process_group() if rank not in [-1, 0] else None
     torch.cuda.empty_cache()
     return results
@@ -464,30 +518,55 @@ def train(hyp, opt, device, tb_writer=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    # weights 初始权重文件
     parser.add_argument('--weights', type=str, default='yolov5s.pt', help='initial weights path')
+    # cfg 模型配置文件，网络结构
     parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
+    # data 数据集配置文件
     parser.add_argument('--data', type=str, default='data/coco128.yaml', help='data.yaml path')
+    # hyp 超参数文件
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
+    # epochs 训练的总轮次
     parser.add_argument('--epochs', type=int, default=300)
+    # batch-size 批次大小
     parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs')
+    # img-size 输入图片分辨率大小
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
+    # rect 是否采用矩形训练
     parser.add_argument('--rect', action='store_true', help='rectangular training')
+    # resume 继续最近的训练
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
+    # nosave 只保存最终的checkpoint，默认FALSE
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
+    # notest 只测试最后一个轮次，默认FALSE
     parser.add_argument('--notest', action='store_true', help='only test final epoch')
+    # noautoanchor 不自动调整anchor，默认FALSE
     parser.add_argument('--noautoanchor', action='store_true', help='disable autoanchor check')
+    # evolve 超参数进化，默认FALSE
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
+    # bucket 谷歌云盘bucket
     parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
+    # cache-images 是否提前缓存图片到内存，以加快训练，默认FALSE
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
+    # image-weights 使用带权重的图像选择进行训练
     parser.add_argument('--image-weights', action='store_true', help='use weighted image selection for training')
+    # name 如果指定将数据文件夹exp{N} 改成 exp{N}_{name}的形式
     parser.add_argument('--name', default='', help='renames experiment folder exp{N} to exp{N}_{name} if supplied')
+    # device 指定训练的设备，cuda或CPU
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    # multi-scale 进行多尺度训练
     parser.add_argument('--multi-scale', action='store_true', help='vary img-size +/- 50%%')
+    # single-cls 训练单类别数据集
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
+    # adam 使用adam优化器
     parser.add_argument('--adam', action='store_true', help='use torch.optim.Adam() optimizer')
+    # sync-bn 使用SyncBatchNorm，仅在DDP模式下可用
     parser.add_argument('--sync-bn', action='store_true', help='use SyncBatchNorm, only available in DDP mode')
+    # local_rank DDP参数，不要修改
     parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
-    parser.add_argument('--logdir', type=str, default='runs/', help='logging directory') #默认的输出位置是runs
+    # logdir 存放运行结果的目录，默认是runs
+    parser.add_argument('--logdir', type=str, default='runs/', help='logging directory')
+    # workers 数据加载器dataloader的最大worker数量
     parser.add_argument('--workers', type=int, default=8, help='maximum number of dataloader workers')
     opt = parser.parse_args() # 解析参数，把所有的参数变成opt的成员变量
 
