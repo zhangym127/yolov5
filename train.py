@@ -32,19 +32,30 @@ from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
 logger = logging.getLogger(__name__)
 
-
+#
+# @param hyp 超参hyperparameters
+# @param opt 输入参数
+# @param device 训练的设备，cpu或者cuda
+# @param tb_writer tensorboard的输出通道
+#
 def train(hyp, opt, device, tb_writer=None):
-    logger.info(f'Hyperparameters {hyp}')
-    log_dir = Path(tb_writer.log_dir) if tb_writer else Path(opt.logdir) / 'evolve'  # logging directory
-    wdir = log_dir / 'weights'  # weights directory
+    
+    #确定训练结果的输出位置和文件
+	logger.info(f'Hyperparameters {hyp}')
+    log_dir = Path(tb_writer.log_dir) if tb_writer else Path(opt.logdir) / 'evolve'  # logging directory 默认是runs/exp0
+    #权重的输出位置
+	wdir = log_dir / 'weights'  # weights directory
     os.makedirs(wdir, exist_ok=True)
-    last = wdir / 'last.pt'
+    #权重文件
+	last = wdir / 'last.pt'
     best = wdir / 'best.pt'
     results_file = str(log_dir / 'results.txt')
+	
+    # 获得迭代次数、batch_size、权重等参数
     epochs, batch_size, total_batch_size, weights, rank = \
         opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.global_rank
 
-    # Save run settings
+    # Save run settings 保存运行时的超参和参数在hyp.yaml和opt.yaml文件中
     with open(log_dir / 'hyp.yaml', 'w') as f:
         yaml.dump(hyp, f, sort_keys=False)
     with open(log_dir / 'opt.yaml', 'w') as f:
@@ -52,34 +63,50 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Configure
     cuda = device.type != 'cpu'
+    # 设置随机数种子，与并行训练相关
     init_seeds(2 + rank)
+    # 加载训练数据描述文件，例如coco.yaml
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.FullLoader)  # data dict
-    with torch_distributed_zero_first(rank):
+    # 检查训练数据是否存在，不存在则下载
+	with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
+    # 获取训练和测试数据的文件清单
     train_path = data_dict['train']
     test_path = data_dict['val']
+    # 获取训练数据的类别数量及名称
     nc, names = (1, ['item']) if opt.single_cls else (int(data_dict['nc']), data_dict['names'])  # number classes, names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
 
     # Model
+    # 获得预训练权重
     pretrained = weights.endswith('.pt')
     if pretrained:
+        # 如果权重文件不存在则下载
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
+		# 加载权重文件
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
         if hyp.get('anchors'):
             ckpt['model'].yaml['anchors'] = round(hyp['anchors'])  # force autoanchor
+		# 加载模型文件，例如yolov5s.yaml，如果没有指定模型文件则根据权重文件确定模型
         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc).to(device)  # create
+		# 预训练权重里面保存了默认coco数据集对应的anchor，加载预训练权重就会覆盖掉用户自定义了anchor
+		# 如果opt.cfg存在(表示采用预训练权重进行训练)就设置去除anchor，使用用户自定义的anchor
+		# 如果是resume，就不去除权重中的anchor，接着训练
         exclude = ['anchor'] if opt.cfg or hyp.get('anchors') else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
+		# 显示加载预训练权重的键值对和创建模型的键值对
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
+        # 没有权重文件，直接根据模型文件创建
         model = Model(opt.cfg, ch=3, nc=nc).to(device)  # create
 
     # Freeze
+    # 冻结模型的部分层，设置需要冻结的层名即可
+    # 具体可以查看https://github.com/ultralytics/yolov5/issues/679
     freeze = ['', ]  # parameter names to freeze (full or partial)
     if any(freeze):
         for k, v in model.named_parameters():
@@ -90,8 +117,10 @@ def train(hyp, opt, device, tb_writer=None):
     # Optimizer
     nbs = 64  # nominal batch size
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
+    # 设置权重衰减系数
     hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
 
+    # 将模型分成三组分别优化
     pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
     for k, v in model.named_parameters():
         v.requires_grad = True
@@ -102,16 +131,21 @@ def train(hyp, opt, device, tb_writer=None):
         else:
             pg0.append(v)  # all else
 
+    # 选用优化器，设置pg0组的优化方式
     if opt.adam:
         optimizer = optim.Adam(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
     else:
         optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
-
+    # 设置pg1组的优化方式
     optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
+	# 设置pg2组的优化方式
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
+	# 打印优化信息
     logger.info('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
     del pg0, pg1, pg2
 
+	# 设置学习率衰减，这里使用余弦退火方式
+    # 就是根据以下公式lf,epoch和超参数hyp['lrf']进行衰减	
     # Scheduler https://arxiv.org/pdf/1812.01187.pdf
     # https://pytorch.org/docs/stable/_modules/torch/optim/lr_scheduler.html#OneCycleLR
     lf = lambda x: ((1 + math.cos(x * math.pi / epochs)) / 2) * (1 - hyp['lrf']) + hyp['lrf']  # cosine
@@ -119,24 +153,34 @@ def train(hyp, opt, device, tb_writer=None):
     # plot_lr_scheduler(optimizer, scheduler, epochs)
 
     # Resume
+    # 初始化开始训练的epoch和最好的结果
+    # best_fitness是以[0.0, 0.0, 0.1, 0.9]为系数并乘以[精确度, 召回率, mAP@0.5, mAP@0.5:0.95]再求和所得
+    # 根据best_fitness来保存best.pt
     start_epoch, best_fitness = 0, 0.0
     if pretrained:
         # Optimizer
+        # 加载优化器与best_fitness
         if ckpt['optimizer'] is not None:
             optimizer.load_state_dict(ckpt['optimizer'])
             best_fitness = ckpt['best_fitness']
 
         # Results
+        # 创建训练结果results.txt文件
         if ckpt.get('training_results') is not None:
             with open(results_file, 'w') as file:
                 file.write(ckpt['training_results'])  # write results.txt
 
         # Epochs
+		# 加载已训练的迭代次数
         start_epoch = ckpt['epoch'] + 1
+		
+        # 如果resume，则备份权重
         if opt.resume:
             assert start_epoch > 0, '%s training to %g epochs is finished, nothing to resume.' % (weights, epochs)
             shutil.copytree(wdir, wdir.parent / f'weights_backup_epoch{start_epoch - 1}')  # save previous weights
-        if epochs < start_epoch:
+        
+		#如果新设置的epochs小于已训练的，则视新设置的epochs为需要再训练的迭代次数，而不是总的训练次数
+		if epochs < start_epoch:
             logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
                         (weights, ckpt['epoch'], epochs))
             epochs += ckpt['epoch']  # finetune additional epochs
@@ -144,36 +188,48 @@ def train(hyp, opt, device, tb_writer=None):
         del ckpt, state_dict
 
     # Image sizes
+    # 获取模型总步长
     gs = int(max(model.stride))  # grid size (max stride)
+    # 检查输入图片尺寸，确保尺寸是步长的整倍数
     imgsz, imgsz_test = [check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
 
     # DP mode
+    # 并行模式，针对单机多卡，参照:https://github.com/ultralytics/yolov5/issues/475
+    # rank设置-1，且GPU数量大于1，则启动并行模式
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
 
     # SyncBatchNorm
+    # 使用跨卡同步BN，仅在DDP模式下有效
     if opt.sync_bn and cuda and rank != -1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
         logger.info('Using SyncBatchNorm()')
 
     # Exponential moving average
+    # 为模型创建EMA指数滑动平均,如果GPU进程数大于1,则不创建
     ema = ModelEMA(model) if rank in [-1, 0] else None
 
     # DDP mode
+    # 如果rank不等于-1,则使用DistributedDataParallel模式
+    # local_rank为gpu编号,rank为进程,例如rank=3，local_rank=0 表示第 3 个进程内的第 1 块 GPU。
     if cuda and rank != -1:
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank)
 
     # Trainloader
+	# 创建训练数据集
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect,
                                             rank=rank, world_size=opt.world_size, workers=opt.workers)
+    # 获取标签的最大类别值，并与类别总数比较
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
     # Process 0
     if rank in [-1, 0]:
+        # 更新ema模型的updates参数,保持ema的平滑性
         ema.updates = start_epoch * nb // accumulate  # set EMA updates
+        # 创建测试集dataloader
         testloader = create_dataloader(test_path, imgsz_test, total_batch_size, gs, opt,
                                        hyp=hyp, augment=False, cache=opt.cache_images and not opt.notest, rect=True,
                                        rank=-1, world_size=opt.world_size, workers=opt.workers)[0]  # testloader
@@ -193,30 +249,59 @@ def train(hyp, opt, device, tb_writer=None):
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
 
     # Model parameters
+    # 根据自己数据集的类别数设置分类损失的系数
     hyp['cls'] *= nc / 80.  # scale coco-tuned hyp['cls'] to current dataset
+	# 设置类别数，超参数
     model.nc = nc  # attach number of classes to model
     model.hyp = hyp  # attach hyperparameters to model
+    """
+    设置giou的值在objectness loss中做标签的系数, 使用代码如下
+    tobj[b, a, gj, gi] = (1.0 - model.gr) + model.gr * giou.detach().clamp(0).type(tobj.dtype)
+    这里model.gr=1，也就是说完全使用标签框与预测框的giou值来作为该预测框的objectness标签
+    """
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
-    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
-    model.names = names
+    # 根据各类别的数量初始化类别权重，数量越多，权重越低
+	model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
+    # 获得类别名称
+	model.names = names
 
     # Start training
+    # 开始训练
     t0 = time.time()
+	# 获取热身训练的迭代次数
     nw = max(round(hyp['warmup_epochs'] * nb), 1e3)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
+	# 初始化mAP和results
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+    """
+    设置学习率衰减所进行到的轮次，
+    目的是打断训练后，--resume接着训练也能正常的衔接之前的训练进行学习率衰减
+    """
     scheduler.last_epoch = start_epoch - 1  # do not move
+    # 混合精度训练中的梯度尺度变换，可以显著缩小显存占用并提升运算速度
     scaler = amp.GradScaler(enabled=cuda)
+    """
+    打印训练和测试输入图片分辨率
+    加载图片时调用的cpu进程数
+    从哪个epoch开始训练
+    """
     logger.info('Image sizes %g train, %g test\n'
                 'Using %g dataloader workers\nLogging results to %s\n'
                 'Starting training for %g epochs...' % (imgsz, imgsz_test, dataloader.num_workers, log_dir, epochs))
+				
+    # 开始训练
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
         # Update image weights (optional)
         if opt.image_weights:
             # Generate indices
+            """
+           如果设置进行图片采样策略，
+           则根据前面初始化的图片采样权重model.class_weights以及maps配合每张图片包含的类别数
+           通过random.choices生成图片索引indices从而进行采样
+           """
             if rank in [-1, 0]:
                 cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2  # class weights
                 iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
@@ -402,9 +487,9 @@ if __name__ == '__main__':
     parser.add_argument('--adam', action='store_true', help='use torch.optim.Adam() optimizer')
     parser.add_argument('--sync-bn', action='store_true', help='use SyncBatchNorm, only available in DDP mode')
     parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
-    parser.add_argument('--logdir', type=str, default='runs/', help='logging directory')
+    parser.add_argument('--logdir', type=str, default='runs/', help='logging directory') #默认的输出位置是runs
     parser.add_argument('--workers', type=int, default=8, help='maximum number of dataloader workers')
-    opt = parser.parse_args()
+    opt = parser.parse_args() # 解析参数，把所有的参数变成opt的成员变量
 
     # Set DDP variables
     opt.total_batch_size = opt.batch_size
@@ -429,7 +514,7 @@ if __name__ == '__main__':
         opt.data, opt.cfg, opt.hyp = check_file(opt.data), check_file(opt.cfg), check_file(opt.hyp)  # check files
         assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified'
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
-        log_dir = increment_dir(Path(opt.logdir) / 'exp', opt.name)  # runs/exp1
+        log_dir = increment_dir(Path(opt.logdir) / 'exp', opt.name)  # runs/exp1 创建默认的输出文件夹，每次文件夹的后缀自动加1
 
     # DDP mode
     device = select_device(opt.device, batch_size=opt.batch_size)
